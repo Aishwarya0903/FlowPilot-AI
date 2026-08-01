@@ -1,0 +1,237 @@
+# ============================================================================
+# FlowPilot AI — Azure DevOps CI/CD Pipeline
+# Stages: Build -> Test -> Package -> Deploy (Dev -> Staging -> Production)
+# Deployment stages are environment-gated and mocked (echo) since this
+# portfolio project has no live cloud target — swap the mock steps for real
+# `AzureWebApp@1` / `KubernetesManifest@1` tasks when a target env exists.
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  mavenPomFile: 'backend/pom.xml'
+  backendArtifactName: 'flowpilot-backend'
+  frontendArtifactName: 'flowpilot-frontend'
+  dockerRegistryServiceConnection: 'flowpilot-acr-connection' # configure in Azure DevOps > Service Connections
+  backendImageRepo: 'flowpilot/backend'
+  frontendImageRepo: 'flowpilot/frontend'
+  tag: '$(Build.BuildId)'
+
+stages:
+  # --------------------------------------------------------------------------
+  - stage: Build
+    displayName: 'Build'
+    jobs:
+      - job: BuildBackend
+        displayName: 'Build Backend (Java 21 / Maven)'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: JavaToolInstaller@0
+            inputs:
+              versionSpec: '21'
+              jdkArchitectureOption: 'x64'
+              jdkSourceOption: 'PreInstalled'
+
+          - task: Cache@2
+            inputs:
+              key: 'maven | "$(Agent.OS)" | backend/pom.xml'
+              restoreKeys: |
+                maven | "$(Agent.OS)"
+              path: '$(HOME)/.m2/repository'
+            displayName: 'Cache Maven packages'
+
+          - script: |
+              cd backend
+              mvn -B clean compile
+            displayName: 'mvn compile'
+
+      - job: BuildFrontend
+        displayName: 'Build Frontend (React)'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '20.x'
+
+          - script: |
+              cd frontend
+              npm install --legacy-peer-deps
+            displayName: 'npm install'
+
+          - script: |
+              cd frontend
+              CI=false npm run build
+            displayName: 'npm run build'
+
+          - publish: 'frontend/build'
+            artifact: 'frontend-build'
+
+  # --------------------------------------------------------------------------
+  - stage: Test
+    displayName: 'Test'
+    dependsOn: Build
+    jobs:
+      - job: TestBackend
+        displayName: 'Backend Unit Tests'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: JavaToolInstaller@0
+            inputs:
+              versionSpec: '21'
+              jdkArchitectureOption: 'x64'
+              jdkSourceOption: 'PreInstalled'
+
+          - script: |
+              cd backend
+              mvn -B test
+            displayName: 'mvn test'
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: 'backend/target/surefire-reports/*.xml'
+              failTaskOnFailedTests: true
+
+      - job: TestFrontend
+        displayName: 'Frontend Unit Tests'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '20.x'
+
+          - script: |
+              cd frontend
+              npm install --legacy-peer-deps
+              CI=true npm test -- --watchAll=false
+            displayName: 'npm test'
+
+  # --------------------------------------------------------------------------
+  - stage: Package
+    displayName: 'Package'
+    dependsOn: Test
+    jobs:
+      - job: PackageBackend
+        displayName: 'Package Backend JAR + Docker Image'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: JavaToolInstaller@0
+            inputs:
+              versionSpec: '21'
+              jdkArchitectureOption: 'x64'
+              jdkSourceOption: 'PreInstalled'
+
+          - script: |
+              cd backend
+              mvn -B clean package -DskipTests
+            displayName: 'mvn package'
+
+          - publish: 'backend/target/flowpilot-ai-backend.jar'
+            artifact: '$(backendArtifactName)'
+
+          - task: Docker@2
+            displayName: 'Build & push backend image'
+            inputs:
+              containerRegistry: '$(dockerRegistryServiceConnection)'
+              repository: '$(backendImageRepo)'
+              command: 'buildAndPush'
+              Dockerfile: 'backend/Dockerfile'
+              buildContext: 'backend'
+              tags: |
+                $(tag)
+                latest
+            condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+
+      - job: PackageFrontend
+        displayName: 'Package Frontend Docker Image'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: Docker@2
+            displayName: 'Build & push frontend image'
+            inputs:
+              containerRegistry: '$(dockerRegistryServiceConnection)'
+              repository: '$(frontendImageRepo)'
+              command: 'buildAndPush'
+              Dockerfile: 'frontend/Dockerfile'
+              buildContext: 'frontend'
+              tags: |
+                $(tag)
+                latest
+            condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+
+  # --------------------------------------------------------------------------
+  - stage: DeployDev
+    displayName: 'Deploy to Dev'
+    dependsOn: Package
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - deployment: DeployDevEnv
+        displayName: 'Deploy backend + frontend to Dev'
+        environment: 'flowpilot-dev'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    echo "Deploying image $(backendImageRepo):$(tag) to Dev App Service..."
+                    echo "Deploying image $(frontendImageRepo):$(tag) to Dev Static Web App..."
+                    echo "(Mocked deployment — replace with AzureWebApp@1 / AzureStaticWebApp@0 once a target subscription exists)"
+                  displayName: 'Mock deploy to Dev'
+
+  # --------------------------------------------------------------------------
+  - stage: DeployStaging
+    displayName: 'Deploy to Staging'
+    dependsOn: DeployDev
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployStagingEnv
+        displayName: 'Deploy backend + frontend to Staging'
+        environment: 'flowpilot-staging'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    echo "Deploying image $(backendImageRepo):$(tag) to Staging..."
+                    echo "Deploying image $(frontendImageRepo):$(tag) to Staging..."
+                  displayName: 'Mock deploy to Staging'
+
+  # --------------------------------------------------------------------------
+  - stage: DeployProduction
+    displayName: 'Deploy to Production'
+    dependsOn: DeployStaging
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployProdEnv
+        displayName: 'Deploy backend + frontend to Production'
+        environment: 'flowpilot-production' # configure manual approval gate on this environment in Azure DevOps
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    echo "Deploying image $(backendImageRepo):$(tag) to Production..."
+                    echo "Deploying image $(frontendImageRepo):$(tag) to Production..."
+                  displayName: 'Mock deploy to Production'
