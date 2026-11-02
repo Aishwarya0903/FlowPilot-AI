@@ -227,14 +227,7 @@ Key endpoints:
 | GET | `/api/ai/workflows/{id}/summary` | AI: workflow summary |
 | GET | `/api/ai/workflows/{id}/improvements` | AI: improvement suggestions |
 
-## Screenshots
 
-> _Add screenshots of the Login, Dashboard, Workflow List, and Workflow Detail pages here before publishing to your portfolio._
-
-- `docs/screenshots/login.png`
-- `docs/screenshots/dashboard.png`
-- `docs/screenshots/workflow-list.png`
-- `docs/screenshots/workflow-detail.png`
 
 ## Future Improvements
 
